@@ -121,6 +121,8 @@ found:
     return 0;
   }
 
+  p->kernel_pagetable = pkvminit();
+  pkvmmap(p->kernel_pagetable, p->kstack, kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W);
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -130,6 +132,27 @@ found:
   return p;
 }
 
+
+void
+kfreewalk(pagetable_t pagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      kfreewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    } 
+    // else if(pte & PTE_V){
+    //   printf("kf%p\n",pte);
+
+    //   panic("freewalk: leaf");
+    // }
+  }
+  kfree((void*)pagetable);
+}
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -141,6 +164,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  kfreewalk(p->kernel_pagetable);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -215,10 +241,13 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
+  initproc = p;
   
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
+  kuvmcopy(p->pagetable, p->kernel_pagetable,  PGSIZE);
+
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -243,12 +272,16 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    // if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = kuvmalloc(p->kernel_pagetable,p->pagetable, sz, sz + n)) == 0) {
+
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    //sz = uvmdealloc(p->pagetable, sz, sz + n);//
+    sz = kuvmdealloc(p->kernel_pagetable,p->pagetable, sz, sz + n);
   }
+  
   p->sz = sz;
   return 0;
 }
@@ -277,6 +310,11 @@ fork(void)
 
   np->parent = p;
 
+  if(kuvmcopy(np->pagetable, np->kernel_pagetable, np->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -473,7 +511,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        pkvminithart(p->kernel_pagetable);
+
         swtch(&c->context, &p->context);
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
