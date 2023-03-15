@@ -440,3 +440,15 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void backtrace(){
+  uint64 s0 = r_fp();
+  uint64 page = PGROUNDDOWN(s0);
+ 
+  while (s0>=page)
+  {
+    printf("%p\n",* (uint64 *)(s0-8));
+    s0 = * (uint64 *)(s0-16);
+  }
+
+}

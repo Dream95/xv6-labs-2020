@@ -113,6 +113,11 @@ found:
     return 0;
   }
 
+  if((p->alarmframe = (struct trapframe *)kalloc()) == 0){
+    release(&p->lock);
+    return 0;
+  }
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -139,6 +144,10 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  if(p->alarmframe)
+    kfree((void*)p->alarmframe);
+  p->alarmframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -696,4 +705,33 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+void cptrapframe(struct trapframe *src,struct trapframe *tf){
+    tf->epc = src->epc;
+    tf->ra = src->ra;
+    tf->sp = src->sp;
+    tf->gp = src->gp;
+    tf->tp = src->tp;
+    tf->a0 = src->a0;
+    tf->a1 = src->a1;
+    tf->a2 = src->a2;
+    tf->a3 = src->a3;
+    tf->a4 = src->a4;
+    tf->a5 = src->a5;
+    tf->a6 = src->a6;
+    tf->a7 = src->a7;
+    tf->s0 = src->s0;
+    tf->s1 = src->s1;
+    tf->s2 = src->s2;
+    tf->s3 = src->s3;
+    tf->s4 = src->s4;
+    tf->s5 = src->s5;
+    tf->s6 = src->s6;
+    tf->s7 = src->s7;
+    tf->s8 = src->s8;
+    tf->s9 = src->s9;
+    tf->s10 = src->s10;
+    tf->s11 = src->s11;
 }

@@ -29,6 +29,8 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -77,8 +79,20 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if (p->ticks)
+    {
+      p->passticks++;
+      if (p->passticks >= p->ticks && !(p->inhandler))
+      {
+        cptrapframe(p->trapframe, p->alarmframe);
+        p->passticks = 0;
+        p->inhandler = 1;
+        p->trapframe->epc = p->handler;
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }
