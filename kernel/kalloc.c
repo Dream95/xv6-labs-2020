@@ -21,6 +21,8 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  int     init;
+  uint16  ref[(PHYSTOP-KERNBASE)/PGSIZE];
 } kmem;
 
 void
@@ -37,6 +39,11 @@ freerange(void *pa_start, void *pa_end)
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
+  kmem.init=1;  
+}
+
+int getindex(uint64 pa){
+  return (PGROUNDDOWN(pa)- KERNBASE)/4096;
 }
 
 // Free the page of physical memory pointed at by v,
@@ -50,13 +57,23 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
+  acquire(&kmem.lock);
+  
+  if (kmem.init)
+  {
+    kmem.ref[getindex((uint64)pa)]--;
+    if (kmem.ref[getindex((uint64)pa)] > 0)
+    {
+      release(&kmem.lock);
+      return;
+    }
+  }
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
+
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -72,11 +89,25 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
+    kmem.ref[getindex((uint64)r)]=1; 
     kmem.freelist = r->next;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+
+void addref(uint64 pa){
+  acquire(&kmem.lock);
+  kmem.ref[getindex(pa)]++;
+  release(&kmem.lock);
+}
+
+
+uint8 getref(uint64 pa){
+  return kmem.ref[getindex(pa)];
 }
