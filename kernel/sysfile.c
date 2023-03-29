@@ -322,6 +322,19 @@ sys_open(void)
     return -1;
   }
 
+  if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW) ) {
+    if ((ip = linkedinode(ip)) == 0) {
+      end_op();
+      return -1;
+    }
+    if (ip->nlink == 0) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    
+  }
+
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -329,7 +342,7 @@ sys_open(void)
     end_op();
     return -1;
   }
-
+ 
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
@@ -482,5 +495,54 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+
+uint64
+sys_symlink(void)
+{
+  char name[DIRSIZ], target[MAXPATH], path[MAXPATH];
+  struct inode*dp, *sip;
+  // struct inode *tdp,*dp, *sip;
+  // int tdev,tinum;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  if((dp = nameiparent(path, name)) == 0){
+    return -1;
+  }
+  begin_op();
+  ilock(dp);
+  
+  if((sip = dirlookup(dp, name, 0)) != 0){
+    ilock(sip);
+    iunlockput(sip);
+    iunlockput(dp);
+   
+    end_op();
+    return -1;
+  }
+  if((sip = ialloc(dp->dev, T_SYMLINK)) == 0)
+    panic("symlink: ialloc");
+  ilock(sip);
+  // sip->addrs[0]=tdev;
+  // sip->addrs[1]=tinum;
+  memmove(sip->addrs+2, target, DIRSIZ);
+
+  sip->dev = dp->dev;
+  sip->major = dp->major;
+  sip->minor = dp->minor;
+  sip->nlink = 1;
+  iupdate(sip);
+  if(dirlink(dp, name, sip->inum) < 0){   
+    panic("symlink: dirlink");
+  }
+  // iunlockput(tdp);
+  iunlockput(sip);
+  iunlockput(dp);
+  end_op();
+
   return 0;
 }

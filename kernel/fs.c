@@ -261,7 +261,6 @@ iget(uint dev, uint inum)
   // Recycle an inode cache entry.
   if(empty == 0)
     panic("iget: no inodes");
-
   ip = empty;
   ip->dev = dev;
   ip->inum = inum;
@@ -336,7 +335,6 @@ iput(struct inode *ip)
 
   if(ip->ref == 1 && ip->valid && ip->nlink == 0){
     // inode has no links and no other references: truncate and free.
-
     // ip->ref == 1 means no other process can have ip locked,
     // so this acquiresleep() won't block (or deadlock).
     acquiresleep(&ip->lock);
@@ -379,7 +377,6 @@ bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp;
-
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
       ip->addrs[bn] = addr = balloc(ip->dev);
@@ -401,6 +398,27 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  bn -= NINDIRECT;
+  if (bn < (MAXFILE - NDIRECT - NINDIRECT)) {
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[bn/256]) == 0){
+      a[bn/256] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[bn%256]) == 0){
+      a[bn%256] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
@@ -409,9 +427,17 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
+  int i, j,k;
   struct buf *bp;
   uint *a;
+  if (ip->type == T_SYMLINK) {
+    for (int i = 0; i < NDIRECT + 1; i++) {
+      if (ip->addrs[i]) {
+        ip->addrs[i] = 0;
+      }
+    }
+    return;
+  }
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -431,6 +457,29 @@ itrunc(struct inode *ip)
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
+
+
+ if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j]){
+        struct buf *d_bp = bread(ip->dev,a[j]);
+        uint *d_a = (uint*)d_bp->data;
+        for(k = 0; k < NINDIRECT; k++){
+            if (d_a[k]) {
+              bfree(ip->dev, d_a[k]);
+            } 
+        }
+        brelse(d_bp);
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
+  }
+
 
   ip->size = 0;
   iupdate(ip);
@@ -671,4 +720,34 @@ struct inode*
 nameiparent(char *path, char *name)
 {
   return namex(path, 1, name);
+}
+
+struct inode *linkedinode(struct inode *sip) {
+  if (sip->type != T_SYMLINK) {
+    panic("linkedinode err");
+  }
+
+  struct inode *ip = sip,*dp;
+  char path[DIRSIZ],name[DIRSIZ];
+  memmove(path,ip->addrs+2,DIRSIZ);
+  iunlockput(sip);
+  for (int i = 0; i < MAXSYMLINK; i++) {
+    if((dp = nameiparent(path, name)) == 0){
+      return 0;
+    }    
+    ilock(dp);
+    if ((ip = dirlookup(dp, name, 0)) == 0) {
+      iunlock(dp);
+      return 0;
+    }
+    ilock(ip);
+    if (ip->type == T_FILE) {
+      iunlockput(dp);
+      return ip;
+    }
+    memmove(path,ip->addrs+2,DIRSIZ);
+    iunlockput(ip);
+    iunlockput(dp);
+  }
+  return 0;
 }
