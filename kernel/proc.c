@@ -694,3 +694,13 @@ procdump(void)
     printf("\n");
   }
 }
+
+int pagefault(uint64 va) {
+  // printf("r_sp is %p", PGROUNDDOWN(r_sp()));
+  // printf("r_sp is %p",r_sp());
+  // printf("context is \n%p", myproc()->context.sp);
+  if (va && va < myproc()->sz && va > myproc()->trapframe->sp) {
+    return pfuvmalloc(myproc()->pagetable, va);
+  }
+  return -1;
+}

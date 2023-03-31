@@ -6,6 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 
+#define LOAD_PAGE_FAULT 13
+#define STORE_PAGE_FAULT 15
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -67,6 +70,10 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause()== LOAD_PAGE_FAULT || r_scause() == STORE_PAGE_FAULT) {
+    if (pagefault(r_stval()) < 0) {
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
