@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -18,7 +22,6 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
-
 extern char trampoline[]; // trampoline.S
 
 
@@ -127,7 +130,7 @@ found:
     release(&p->lock);
     return 0;
   }
-
+  p->mmapsz = TRAPFRAME ;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -146,8 +149,12 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if (p->mmapsz && p->mmapsz < TRAPFRAME) {
+    freemmap(p->pagetable, p->mmapsz, TRAPFRAME - p->mmapsz);
+    p->mmapsz = TRAPFRAME;
+  }
   if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+    proc_freepagetable(p->pagetable, p->sz);  
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -294,6 +301,13 @@ fork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+  for (i=0; i<MAX_MMAP; i++) {
+    if (p->mmapinfo[i].f!=0) {
+      p->mmapinfo[i].f->ref++;
+      np->mmapinfo[i] = p->mmapinfo[i]; 
+    }
+  }    
+  np->mmapsz = p->mmapsz;
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -350,6 +364,13 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  struct mmapinfo *info;
+  for (info = myproc()->mmapinfo; info < myproc()->mmapinfo + 16; info++) {
+    if (info->f != 0) {
+      fileclose(info->f);
     }
   }
 
@@ -700,4 +721,52 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int pagefault(uint64 va){
+  struct proc *p = myproc();
+  if (va < p->mmapsz) {
+    return -1;
+  }
+  // printf("stava is %p,l is %d\n",info->startva, info->length);
+  struct mmapinfo *info;
+  for (info = p->mmapinfo; info< myproc()->mmapinfo +16 ; info++) {
+
+    if (info->f && va >= info->startva && va < info->startva + info->length) {
+     
+      char *pa;
+      int flag = PTE_U | PTE_R;
+      pa = kalloc();
+      if (info->flags | PROT_WRITE) {
+        flag |= PTE_W;
+      }
+      memset(pa, 0, PGSIZE);
+      ilock(info->f->ip);
+      if (readi(info->f->ip, 0, (uint64)pa, (va - info->startva) & 0x1000, PGSIZE) !=0) {
+        iunlock(info->f->ip);
+        mappages(p->pagetable, va, PGSIZE, (uint64)pa, PTE_W | PTE_R | PTE_U);
+        return 0;
+      }
+      iunlock(info->f->ip);
+      return -1;
+    }
+  }
+  return -1;
+}
+
+void flushmmappage(struct mmapinfo *info, uint64 va, int length) {
+  ilock(info->f->ip);
+  begin_op();
+  for (uint64 addr = PGROUNDDOWN(va); addr < va + length; addr += PGSIZE) {
+      uint64 pa = checkdirty(myproc()->pagetable,addr);
+      if (pa) {
+        writei(info->f->ip, 0, pa, (addr - info->startva) & 0x1000, PGSIZE);
+      }
+  }
+  end_op();
+  iunlock(info->f->ip);
+}
+
+void freemmap(pagetable_t pagetable,uint64 mmapaddr,uint64 size){
+  uvmunmap(pagetable, mmapaddr, size / PGSIZE, 1);   
 }

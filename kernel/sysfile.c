@@ -484,3 +484,55 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64 sys_mmap(void){
+  int length;
+  int port,flags,fd; 
+  if (argint(1, &length) < 0 || argint(2, &port) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0) {
+    return -1;
+  }
+  struct mmapinfo *info;
+  if (myproc()->ofile[fd] == 0) {
+    return -1;
+  }
+  if (myproc()->ofile[fd]->writable == 0 && port&PROT_WRITE && flags & MAP_SHARED) {
+    return -1;
+  }
+
+  for (info = myproc()->mmapinfo; info< myproc()->mmapinfo +16 ; info++) {
+    if (info->f == 0) {
+      info->f = myproc()->ofile[fd];
+      info->f->ref++;
+      info->length = length;
+      info->port = port;
+      info->flags = flags;
+      myproc()->mmapsz -= length;
+      return info->startva = myproc()->mmapsz;
+    }
+  }
+  return 0;
+}
+
+uint64 sys_munmap(void) {
+  uint64 addr;
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0) {
+    return -1;
+  }
+  struct mmapinfo *info;
+  for (info = myproc()->mmapinfo; info < myproc()->mmapinfo + 16; info++) {
+    if (info->f && addr >= info->startva &&
+      addr < info->startva + info->length) {
+      if (info->port & PROT_WRITE && info->flags & MAP_SHARED) {
+          flushmmappage(info,addr,length);
+      }  
+      info->length -= length;
+      if (info->length == 0) {
+        info->f->ref--;
+        info->f = 0;
+      }
+      return 0;
+    }
+  }
+  return 0;
+}
